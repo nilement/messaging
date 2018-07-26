@@ -25,6 +25,7 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 	}
 
 	if req.Method == "POST" {
+		fmt.Println("Found posted!")
 		topicName := getPath(req)
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(req.Body)
@@ -32,6 +33,8 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		if topic, ok := broker.Topics[topicName]; ok {
 			topic.Messages <- s
 		}
+		fmt.Println("Placed message!")
+		return
 	}
 
 	rw.Header().Set("Content-Type", "text/event-stream")
@@ -40,14 +43,18 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 	rw.Header().Set("Access-Control-Allow-Origin", "*")
 
 	messageChannel := make(chan []byte)
-	topic := getPath(req)
-	if topic, ok := broker.Topics[topic]; ok {
+	topicName := getPath(req)
+	if topic, ok := broker.Topics[topicName]; ok {
 		topic.Listeners[messageChannel] = true
+	} else {
+		CreateTopic(broker, topicName)
+		fmt.Println("Created topic!")
+		broker.Topics[topicName].Listeners[messageChannel] = true
 	}
 
 	for {
-		//fmt.Println("Looking for message!")
-		fmt.Fprintf(rw, "data: %s\n\n", <-messageChannel)
+		fmt.Println("Looking for message!")
+		fmt.Fprintf(rw, "%s\n", <-messageChannel)
 
 		flusher.Flush()
 	}
@@ -65,15 +72,16 @@ func CreateTopic(broker *TopicBroker, topic string) {
 	}
 
 	broker.Topics[topic] = (*newTopic)
+	go newTopic.listen()
 }
 
 func (topic *Topic) listen() {
 	for {
 		select {
 		case message := <-topic.Messages:
-			//fmt.Println("putting message to listeners!")
+			fmt.Println("putting message to listeners!")
 			for listener := range topic.Listeners {
-				//fmt.Println("Put message to listener!")
+				fmt.Println("Put message to listener!")
 				listener <- message
 			}
 		}
