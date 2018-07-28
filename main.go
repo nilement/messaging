@@ -16,10 +16,6 @@ type Topic struct {
 	Messages  chan []byte
 }
 
-type Message struct {
-	data  []byte
-	event string
-}
 
 func EventString(message []byte, event string) string {
 	var buffer bytes.Buffer
