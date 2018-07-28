@@ -44,7 +44,6 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 	}
 
 	if req.Method == "POST" {
-		fmt.Println("Found posted!")
 		topicName := getPath(req)
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(req.Body)
@@ -52,7 +51,6 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		if topic, ok := broker.Topics[topicName]; ok {
 			topic.Messages <- s
 		}
-		fmt.Println("Placed message!")
 		rw.WriteHeader(204)
 		return
 	}
@@ -63,13 +61,11 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		topic.Listeners[messageChannel] = true
 	} else {
 		CreateTopic(broker, topicName)
-		fmt.Println("Created topic!")
 		broker.Topics[topicName].Listeners[messageChannel] = true
 	}
 	connectionTime := time.Now()
 
 	for {
-		//fmt.Println("Looking for message!")
 		select {
 		case m := <-messageChannel:
 			fmt.Fprintf(rw, "%s\n", EventString(m, "msg"))
@@ -113,9 +109,7 @@ func (topic *Topic) listen() {
 	for {
 		select {
 		case message := <-topic.Messages:
-			fmt.Println("putting message to listeners!")
 			for listener := range topic.Listeners {
-				fmt.Println("Put message to listener!")
 				listener <- message
 			}
 		}
@@ -126,28 +120,12 @@ func NewBroker() (broker *TopicBroker) {
 	broker = &TopicBroker{
 		Topics: make(map[string]Topic),
 	}
-	newTopic := &Topic{
-		Listeners: make(map[chan []byte]bool),
-		Messages:  make(chan []byte),
-	}
-
-	broker.Topics["info"] = (*newTopic)
-	go newTopic.listen()
 
 	return
 }
 
 func main() {
 	broker := NewBroker()
-
-	/*go func() {
-		for {
-			//fmt.Println("Putting message!")
-			broker.Topics["info"].Messages <- []byte("Hello")
-			//fmt.Println("Message put!")
-			time.Sleep(time.Second * 3)
-		}
-	}()*/
 
 	http.ListenAndServe(":2666", broker)
 }
