@@ -15,8 +15,8 @@ type TopicBroker struct {
 }
 
 type Topic struct {
-	Listeners map[chan []byte]bool
-	Messages  chan []byte
+	Listeners map[chan Message]bool
+	Messages  chan Message
 	Quit      chan bool
 	lock      *sync.Mutex
 }
@@ -26,11 +26,11 @@ type Message struct {
 	Data []byte
 }
 
-func EventStringWithID(message []byte, event string, id int) string {
+func EventStringWithID(message Message, event string) string {
 	var buffer bytes.Buffer
-	buffer.WriteString(fmt.Sprintf("data: %s\n", message))
+	buffer.WriteString(fmt.Sprintf("data: %s\n", message.Data))
 	buffer.WriteString(fmt.Sprintf("event: %s\n", event))
-	buffer.WriteString(fmt.Sprintf("id: %d\n", id))
+	buffer.WriteString(fmt.Sprintf("id: %d\n", message.ID))
 	return buffer.String()
 }
 
@@ -60,17 +60,23 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		topicName := getPath(req)
 		buf := new(bytes.Buffer)
 		buf.ReadFrom(req.Body)
-		s := buf.Bytes()
+		globalID := <-broker.GlobalMessagesID
+		message := &Message{
+			Data: buf.Bytes(),
+			ID:   globalID,
+		}
+		globalID++
+		broker.GlobalMessagesID <- globalID
 		broker.DeleteLock.Lock()
 		if topic, ok := broker.Topics[topicName]; ok {
-			topic.Messages <- s
+			topic.Messages <- *message
 		}
 		broker.DeleteLock.Unlock()
 		rw.WriteHeader(204)
 		return
 	}
 
-	messageChannel := make(chan []byte)
+	messageChannel := make(chan Message)
 	topicName := getPath(req)
 	broker.DeleteLock.Lock()
 	if topic, ok := broker.Topics[topicName]; ok {
@@ -87,10 +93,7 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 	for {
 		select {
 		case m := <-messageChannel:
-			id := <-broker.GlobalMessagesID
-			fmt.Fprintf(rw, "%s\n", EventStringWithID(m, "msg", id))
-			id++
-			broker.GlobalMessagesID <- id
+			fmt.Fprintf(rw, "%s\n", EventStringWithID(m, "msg"))
 		default:
 			if TimeoutCheck(connectionTime) {
 				broker.DeleteLock.Lock()
@@ -129,8 +132,8 @@ func getPath(req *http.Request) string {
 
 func CreateTopic(broker *TopicBroker, topic string) {
 	newTopic := &Topic{
-		Listeners: make(map[chan []byte]bool),
-		Messages:  make(chan []byte),
+		Listeners: make(map[chan Message]bool),
+		Messages:  make(chan Message, 100),
 		Quit:      make(chan bool, 1),
 		lock:      new(sync.Mutex),
 	}
