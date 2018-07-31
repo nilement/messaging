@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
-	"runtime"
 	"sync"
 	"time"
 )
 
 type TopicBroker struct {
-	Topics     map[string]Topic
-	DeleteLock *sync.Mutex
+	Topics           map[string]Topic
+	GlobalMessagesID chan int
+	DeleteLock       *sync.Mutex
 }
 
 type Topic struct {
@@ -19,6 +19,19 @@ type Topic struct {
 	Messages  chan []byte
 	Quit      chan bool
 	lock      *sync.Mutex
+}
+
+type Message struct {
+	ID   int
+	Data []byte
+}
+
+func EventStringWithID(message []byte, event string, id int) string {
+	var buffer bytes.Buffer
+	buffer.WriteString(fmt.Sprintf("data: %s\n", message))
+	buffer.WriteString(fmt.Sprintf("event: %s\n", event))
+	buffer.WriteString(fmt.Sprintf("id: %d\n", id))
+	return buffer.String()
 }
 
 func EventString(message []byte, event string) string {
@@ -74,20 +87,24 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 	for {
 		select {
 		case m := <-messageChannel:
-			fmt.Fprintf(rw, "%s\n", EventString(m, "msg"))
+			id := <-broker.GlobalMessagesID
+			fmt.Fprintf(rw, "%s\n", EventStringWithID(m, "msg", id))
+			id++
+			broker.GlobalMessagesID <- id
 		default:
 			if TimeoutCheck(connectionTime) {
 				broker.DeleteLock.Lock()
 				broker.Topics[topicName].lock.Lock()
 				delete(broker.Topics[topicName].Listeners, messageChannel)
 				if (len(broker.Topics[topicName].Listeners)) == 0 {
-					fmt.Println("Deleting")
 					broker.Topics[topicName].Quit <- true
+					broker.Topics[topicName].lock.Unlock()
 					delete(broker.Topics, topicName)
+				} else {
+					broker.Topics[topicName].lock.Unlock()
 				}
 				fmt.Fprintf(rw, "%s\n", EventString([]byte("Timeout"), "timeout"))
 				broker.DeleteLock.Unlock()
-				broker.Topics[topicName].lock.Unlock()
 				return
 			}
 		}
@@ -141,30 +158,18 @@ func (topic *Topic) listen() {
 
 func NewBroker() (broker *TopicBroker) {
 	broker = &TopicBroker{
-		Topics:     make(map[string]Topic),
-		DeleteLock: new(sync.Mutex),
+		Topics:           make(map[string]Topic),
+		DeleteLock:       new(sync.Mutex),
+		GlobalMessagesID: make(chan int, 1),
 	}
+
+	broker.GlobalMessagesID <- 0
 
 	return
 }
 
 func main() {
 	broker := NewBroker()
-	go func() {
-		for {
-			var m runtime.MemStats
-			runtime.ReadMemStats(&m)
-			// For info on each, see: https://golang.org/pkg/runtime/#MemStats
-			fmt.Printf("Alloc = %v MiB", bToMb(m.Alloc))
-			fmt.Printf("\tTotalAlloc = %v MiB", bToMb(m.TotalAlloc))
-			fmt.Printf("\tSys = %v MiB", bToMb(m.Sys))
-			fmt.Printf("\tNumGC = %v\n", m.NumGC)
-			time.Sleep(time.Second)
-		}
-	}()
-	http.ListenAndServe(":2666", broker)
-}
 
-func bToMb(b uint64) uint64 {
-	return b / 1024 / 1024
+	http.ListenAndServe(":2666", broker)
 }
