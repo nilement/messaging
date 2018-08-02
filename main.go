@@ -76,7 +76,7 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		return
 	}
 
-	messageChannel := make(chan Message)
+	messageChannel := make(chan Message, 500)
 	topicName := getPath(req)
 	broker.DeleteLock.Lock()
 	if topic, ok := broker.Topics[topicName]; ok {
