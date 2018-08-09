@@ -15,10 +15,10 @@ type TopicBroker struct {
 }
 
 type Topic struct {
-	Listeners map[chan Message]bool
-	Messages  chan Message
-	Quit      chan bool
-	lock      *sync.Mutex
+	NewListener     chan chan Message
+	ExitingListener chan chan Message
+	Listeners       map[chan Message]bool
+	Messages        chan Message
 }
 
 type Message struct {
@@ -80,12 +80,10 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 	topicName := getPath(req)
 	broker.DeleteLock.Lock()
 	if topic, ok := broker.Topics[topicName]; ok {
-		broker.Topics[topicName].lock.Lock()
-		topic.Listeners[messageChannel] = true
-		broker.Topics[topicName].lock.Unlock()
+		topic.NewListener <- messageChannel
 	} else {
 		CreateTopic(broker, topicName)
-		broker.Topics[topicName].Listeners[messageChannel] = true
+		broker.Topics[topicName].NewListener <- messageChannel
 	}
 	broker.DeleteLock.Unlock()
 	connectionTime := time.Now()
@@ -97,16 +95,10 @@ func (broker *TopicBroker) ServeHTTP(rw http.ResponseWriter, req *http.Request) 
 		default:
 			if TimeoutCheck(connectionTime) {
 				broker.DeleteLock.Lock()
-				broker.Topics[topicName].lock.Lock()
-				delete(broker.Topics[topicName].Listeners, messageChannel)
-				if (len(broker.Topics[topicName].Listeners)) == 0 {
-					broker.Topics[topicName].Quit <- true
-					broker.Topics[topicName].lock.Unlock()
-					delete(broker.Topics, topicName)
-				} else {
-					broker.Topics[topicName].lock.Unlock()
+				if topic, ok := broker.Topics[topicName]; ok {
+					topic.ExitingListener <- messageChannel
+					fmt.Fprintf(rw, "%s\n", EventString([]byte("Timeout"), "timeout"))
 				}
-				fmt.Fprintf(rw, "%s\n", EventString([]byte("Timeout"), "timeout"))
 				broker.DeleteLock.Unlock()
 				return
 			}
@@ -132,30 +124,34 @@ func getPath(req *http.Request) string {
 
 func CreateTopic(broker *TopicBroker, topic string) {
 	newTopic := &Topic{
-		Listeners: make(map[chan Message]bool),
-		Messages:  make(chan Message, 100),
-		Quit:      make(chan bool, 1),
-		lock:      new(sync.Mutex),
+		Listeners:       make(map[chan Message]bool),
+		Messages:        make(chan Message, 100),
+		ExitingListener: make(chan chan Message),
+		NewListener:     make(chan chan Message),
 	}
 
 	broker.Topics[topic] = (*newTopic)
-	go newTopic.listen()
+	go newTopic.listen(broker, topic)
 }
 
-func (topic *Topic) listen() {
+func (topic *Topic) listen(broker *TopicBroker, name string) {
 	for {
-		topic.lock.Lock()
 		select {
-		case <-topic.Quit:
-			defer topic.lock.Unlock()
-			return
+		case listener := <-topic.NewListener:
+			topic.Listeners[listener] = true
+		case listener := <-topic.ExitingListener:
+			delete(topic.Listeners, listener)
+			if len(topic.Listeners) == 0 {
+				broker.DeleteLock.Lock()
+				delete(broker.Topics, name)
+				broker.DeleteLock.Unlock()
+			}
 		case message := <-topic.Messages:
 			for listener := range topic.Listeners {
 				listener <- message
 			}
 		default:
 		}
-		topic.lock.Unlock()
 	}
 }
 
